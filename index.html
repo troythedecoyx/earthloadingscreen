@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Loading...</title>
+<style>
+  :root {
+    --bg: #fff;
+    --text: #202122;
+    --link: #3366cc;
+    --thumb-border: #c8ccd1;
+    --thumb-bg: #f8f9fa;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: var(--bg); }
+  body {
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Lato, "Helvetica Neue", Arial, sans-serif;
+    overflow: hidden;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .stage {
+    position: fixed;
+    inset: 0 0 90px 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+  }
+
+  /* Classic Wikipedia thumbnail box */
+  .thumb {
+    border: 1px solid var(--thumb-border);
+    background: var(--thumb-bg);
+    padding: 3px;
+    width: var(--w, 400px);
+    max-width: 100%;
+    opacity: 0;
+    transition: opacity var(--fade, 800ms) ease-in-out;
+  }
+  .thumb.show, .loading-text.show { opacity: 1; }
+  .thumb img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border: 1px solid var(--thumb-border);
+    background: #fff;
+  }
+  .thumb figcaption {
+    position: relative;
+    padding: 4px 22px 3px 3px;
+    font-size: clamp(13px, 1.6vw, 15px);
+    line-height: 1.4;
+  }
+  .thumb figcaption .link { color: var(--link); }
+  .magnify {
+    position: absolute;
+    top: 6px;
+    right: 3px;
+    width: 15px;
+    height: 11px;
+  }
+
+  /* Bottom-left loader */
+  .loader {
+    position: fixed;
+    left: 10px;
+    bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 22px;
+  }
+  .globe {
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    overflow: hidden;
+    background: #000;
+    flex: none;
+  }
+  .globe canvas {
+    width: 100%;
+    height: 100%;
+    transform: scale(1.12);
+    display: block;
+  }
+  .loading-text {
+    font-family: "Linux Libertine", "Georgia", "Times New Roman", serif;
+    font-size: 34px;
+    color: var(--link);
+    white-space: nowrap;
+    opacity: 0;
+    transition: opacity var(--fade, 800ms) ease-in-out;
+  }
+  @media (max-width: 600px) {
+    .globe { width: 52px; height: 52px; }
+    .loading-text { font-size: 28px; }
+  }
+
+  /* Click-to-start overlay (browsers block audio until a click) */
+  .start {
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    padding: 16px;
+    background: var(--bg);
+    text-align: center;
+    transition: opacity 600ms ease;
+  }
+  .start.hide { opacity: 0; pointer-events: none; }
+  .start button {
+    font: inherit;
+    font-size: 18px;
+    padding: 12px 28px;
+    border: 1px solid var(--thumb-border);
+    background: var(--thumb-bg);
+    color: var(--link);
+    border-radius: 2px;
+    cursor: pointer;
+  }
+  .start button:hover { background: #eaecf0; }
+  .start .song { font-size: 14px; color: #54595d; max-width: 420px; line-height: 1.5; }
+  .start label { color: var(--link); cursor: pointer; text-decoration: underline; }
+  .start input { display: none; }
+  .mute {
+    position: fixed;
+    right: 12px;
+    bottom: 12px;
+    font-size: 12px;
+    color: #a2a9b1;
+  }
+</style>
+</head>
+<body>
+  <div class="stage">
+    <figure class="thumb" id="thumb">
+      <img id="img" alt="">
+      <figcaption>
+        <svg class="magnify" viewBox="0 0 15 11" fill="none" stroke="#72777d">
+          <rect x="5.5" y="0.5" width="9" height="7" fill="#fff"/>
+          <rect x="0.5" y="4.5" width="6" height="6" fill="#fff"/>
+        </svg>
+        <span id="caption"></span>
+      </figcaption>
+    </figure>
+  </div>
+
+  <div class="loader">
+    <div class="globe">
+      <canvas id="globeCanvas" width="128" height="128"></canvas>
+    </div>
+
+    <span class="loading-text" id="loading" dir="auto">Loading...</span>
+  </div>
+
+  <div class="mute" id="muteHint"></div>
+
+  <div class="start" id="start">
+    <button id="startBtn">▶ Start</button>
+    <div class="song" id="songStatus">
+      Looking for <b>song.mp3</b> next to this page…
+    </div>
+    <div class="song">
+      <label for="songFile">Choose a song file</label> (e.g. “Coloured Candies” by Tony Hymas)
+      <input type="file" id="songFile" accept="audio/*">
+    </div>
+  </div>
+
+  <audio id="audio" src="song.mp3" loop preload="auto"></audio>
+
+<script src="https://cdn.jsdelivr.net/npm/omggif@1.0.10/omggif.js"></script>
+<script>
+  const SLIDE_MS = 3500; // how long each image stays fully visible
+  const FADE_MS = 800;   // fade in / fade out duration
+  const GLOBE_FPS = 6;   // frame limit for the spinning globe
+  document.documentElement.style.setProperty("--fade", FADE_MS + "ms");
+
+  // Frame-limited globe: decode every frame of the rotating-Earth GIF, then step through them at GLOBE_FPS
+  (async () => {
+    const GLOBE_GIF = "https://upload.wikimedia.org/wikipedia/commons/2/2c/Rotating_earth_%28large%29.gif";
+    const out = document.getElementById("globeCanvas").getContext("2d");
+    try {
+      const bytes = new Uint8Array(await (await fetch(GLOBE_GIF)).arrayBuffer());
+      const gif = new GifReader(bytes);
+      const { width: w, height: h } = gif;
+      const full = document.createElement("canvas");
+      full.width = w; full.height = h;
+      const fctx = full.getContext("2d");
+      const pixels = new Uint8ClampedArray(w * h * 4);
+      const frames = [];
+      for (let i = 0; i < gif.numFrames(); i++) {
+        gif.decodeAndBlitFrameRGBA(i, pixels); // frames build on the previous one
+        fctx.putImageData(new ImageData(pixels, w, h), 0, 0);
+        const f = document.createElement("canvas");
+        f.width = f.height = 128;
+        f.getContext("2d").drawImage(full, 0, 0, 128, 128);
+        frames.push(f);
+      }
+      let n = 0;
+      setInterval(() => {
+        out.clearRect(0, 0, 128, 128);
+        out.drawImage(frames[n], 0, 0);
+        n = (n + 1) % frames.length;
+      }, 1000 / GLOBE_FPS);
+    } catch (e) {
+      console.error("Globe failed to load", e);
+    }
+  })();
+
+  const LOADING = [
+    "Loading...", "Laden...", "تحميل...", "Chargement...", "Cargando...",
+    "Caricamento...", "Carregando...", "Загрузка...", "読み込み中...", "加载中...",
+    "로드 중...", "Wird geladen...", "Ładowanie...", "Yükleniyor...", "Đang tải...",
+    "Φόρτωση...", "טוען...", "लोड हो रहा है...", "Memuat...", "Laddar...",
+    "Indlæser...", "Laster...", "Ladataan...", "Načítání...", "Betöltés...",
+    "Se încarcă...", "Завантаження...", "กำลังโหลด...", "Inapakia...", "Lódáil..."
+  ];
+
+  const API = "https://en.wikipedia.org/w/api.php";
+  const queue = [];
+  let fetching = false;
+  let timer = null;
+  let lastLang = -1;
+
+  const el = {
+    thumb: document.getElementById("thumb"),
+    img: document.getElementById("img"),
+    caption: document.getElementById("caption"),
+    loading: document.getElementById("loading"),
+  };
+
+  const abs = u => (u.startsWith("//") ? "https:" + u : u);
+
+  // Rebuild caption as plain text + blue "link" spans (no real links, no refs)
+  function buildCaption(node, out) {
+    for (const child of node.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        out.appendChild(document.createTextNode(child.textContent));
+      } else if (child.nodeType === Node.ELEMENT_NODE) {
+        if (child.matches("sup, style, .mw-ref, .reference, .noprint")) continue;
+        if (child.tagName === "A") {
+          const s = document.createElement("span");
+          s.className = "link";
+          s.textContent = child.textContent;
+          out.appendChild(s);
+        } else if (child.tagName === "BR") {
+          out.appendChild(document.createElement("br"));
+        } else {
+          buildCaption(child, out);
+        }
+      }
+    }
+  }
+
+  function extractFigures(html) {
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const found = [];
+    for (const fig of doc.querySelectorAll('figure[typeof*="mw:File/Thumb"]')) {
+      const img = fig.querySelector("img");
+      const cap = fig.querySelector("figcaption");
+      if (!img || !cap || !cap.textContent.trim()) continue;
+      const w = +img.getAttribute("width");
+      if (w < 150) continue;
+      const srcset = img.getAttribute("srcset") || "";
+      const hi = srcset.split(",").map(s => s.trim().split(" ")[0]).filter(Boolean).pop();
+      found.push({
+        src: abs(hi || img.getAttribute("src")),
+        width: w,
+        aspect: (+img.getAttribute("height") || w) / w,
+        captionNode: cap,
+      });
+    }
+    return found;
+  }
+
+  async function parsePage(title) {
+    const url = API + "?" + new URLSearchParams({
+      action: "parse", page: title, prop: "text", format: "json",
+      formatversion: "2", disableeditsection: "1", origin: "*"
+    });
+    const data = await (await fetch(url)).json();
+    const figs = extractFigures(data?.parse?.text || "");
+    if (!figs.length) return;
+    const f = figs[Math.floor(Math.random() * figs.length)];
+    new Image().src = f.src; // preload
+    queue.push(f);
+  }
+
+  async function refill() {
+    if (fetching) return;
+    fetching = true;
+    try {
+      // Random articles that have at least one image, then pull a captioned thumb from each
+      const url = API + "?" + new URLSearchParams({
+        action: "query", format: "json", origin: "*",
+        generator: "random", grnnamespace: "0", grnlimit: "20",
+        prop: "pageimages", piprop: "name"
+      }) + "&_=" + Date.now();
+      const data = await (await fetch(url)).json();
+      const titles = Object.values(data?.query?.pages || {})
+        .filter(p => p.pageimage)
+        .map(p => p.title)
+        .slice(0, 8);
+      await Promise.allSettled(titles.map(parsePage));
+    } catch (e) {
+      console.error("Wikipedia fetch failed", e);
+    } finally {
+      fetching = false;
+    }
+  }
+
+  function nextLoadingText() {
+    let i;
+    do { i = Math.floor(Math.random() * LOADING.length); } while (i === lastLang);
+    lastLang = i;
+    el.loading.textContent = LOADING[i];
+  }
+
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+  let busy = false;
+  let started = false;
+
+  async function next() {
+    if (busy) return;
+    busy = true;
+    clearTimeout(timer);
+
+    if (queue.length < 4) refill();
+    while (!queue.length) {
+      await refill();
+      if (!queue.length) await wait(1000);
+    }
+    const item = queue.shift();
+
+    // Load the next image fully before fading out the current one
+    const pre = new Image();
+    const ok = await new Promise(resolve => {
+      pre.onload = () => resolve(true);
+      pre.onerror = () => resolve(false);
+      pre.src = item.src;
+    });
+    if (!ok) { busy = false; return next(); } // broken image, skip
+
+    // Fade out
+    el.thumb.classList.remove("show");
+    el.loading.classList.remove("show");
+    await wait(FADE_MS);
+
+    // Swap content
+    el.img.src = item.src;
+    el.caption.replaceChildren();
+    buildCaption(item.captionNode, el.caption);
+    el.img.alt = el.caption.textContent;
+    // Show at roughly 1.6x the article's thumb width, capped to the screen
+    const maxH = (window.innerHeight - 90) * 0.65;
+    el.thumb.style.setProperty("--w", Math.min(item.width * 1.6, window.innerWidth - 32, 520, maxH / item.aspect) + "px");
+    nextLoadingText();
+
+    // Fade in
+    el.thumb.classList.add("show");
+    el.loading.classList.add("show");
+    await wait(FADE_MS);
+
+    busy = false;
+    timer = setTimeout(next, SLIDE_MS);
+  }
+
+  // ---- Music + start screen ----
+  const audio = document.getElementById("audio");
+  const startEl = document.getElementById("start");
+  const songStatus = document.getElementById("songStatus");
+  const muteHint = document.getElementById("muteHint");
+
+  audio.addEventListener("canplay", () => {
+    songStatus.textContent = "♪ Song ready";
+  }, { once: true });
+  audio.addEventListener("error", () => {
+    if (!audio.src.startsWith("blob:")) {
+      songStatus.innerHTML = "No <b>song.mp3</b> found next to this page. Pick a file below, or start without music.";
+    }
+  });
+
+  document.getElementById("songFile").addEventListener("change", e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    audio.src = URL.createObjectURL(file);
+    songStatus.textContent = "♪ " + file.name;
+  });
+
+  function start() {
+    if (started) return;
+    started = true;
+    audio.play().then(() => {
+      muteHint.textContent = "M to mute";
+    }).catch(() => {});
+    startEl.classList.add("hide");
+    next();
+  }
+
+  document.getElementById("startBtn").addEventListener("click", e => {
+    e.stopPropagation();
+    start();
+  });
+  startEl.addEventListener("click", e => e.stopPropagation());
+
+  document.addEventListener("click", () => { if (started) next(); });
+  document.addEventListener("keydown", e => {
+    if (!started) {
+      if (e.code === "Enter" || e.code === "Space") { e.preventDefault(); start(); }
+      return;
+    }
+    if (e.code === "Space" || e.code === "ArrowRight") { e.preventDefault(); next(); }
+    if (e.code === "KeyM") audio.muted = !audio.muted;
+  });
+
+  // Start fetching in the background while the start screen is up
+  refill();
+</script>
+</body>
+</html>
